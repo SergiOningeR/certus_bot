@@ -1,0 +1,13 @@
+[Unit]
+Description=Certus Telecom Tasks Bot
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/certus_bot
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
