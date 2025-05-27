@@ -16,12 +16,12 @@
 1. **Склонируйте репозиторий** и перейдите в папку проекта:
 ```bash
 git clone https://github.com/sergioninger/certus_bot.git
-cd certus_bot```
-
+cd certus_bot
+```
 Установите зависимости из requirements.txt:
 ```bash
-pip install -r requirements.txt```
-
+pip install -r requirements.txt
+```
 Создайте и настройте базу данных MariaDB:
 Создайте базу данных, например certus_tasks_db.
 Выполните SQL-структуру для создания таблицы tickets (см. ниже).
@@ -33,7 +33,8 @@ pip install -r requirements.txt```
 Запустите бота:
 
 ```bash
-python main.py```
+python main.py
+```
 systemd-сервис (опционально)
 Для автоматического запуска бота можно создать systemd-сервис. Пример файла certus_bot.service:
 ```ini
@@ -49,8 +50,8 @@ ExecStart=/usr/bin/python3 /path/to/your/project/main.py
 Restart=on-failure
 
 [Install]
-WantedBy=multi-user.target```
-
+WantedBy=multi-user.target
+```
 Замените User и пути на свои.
 SQL-структура таблицы tickets
 Ниже приведена структура таблицы tickets для базы данных MariaDB:
@@ -70,4 +71,5 @@ CREATE TABLE tickets (
     admin_id BIGINT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;```
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
