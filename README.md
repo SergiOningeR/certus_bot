@@ -14,12 +14,12 @@
 ## Установка
 
 1. **Склонируйте репозиторий** и перейдите в папку проекта:
-```bash
+``bash
 git clone https://github.com/sergioninger/certus_bot.git
-cd certus_bot```
+cd certus_bot``
 Установите зависимости из requirements.txt:
-```bash
-pip install -r requirements.txt```
+``bash
+pip install -r requirements.txt``
 Создайте и настройте базу данных MariaDB:
 Создайте базу данных, например certus_tasks_db.
 Выполните SQL-структуру для создания таблицы tickets (см. ниже).
@@ -29,11 +29,11 @@ pip install -r requirements.txt```
 Добавьте идентификаторы администраторов в список ADMINS.
 Укажите параметры подключения к базе данных (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME).
 Запустите бота:
-```bash
-python main.py```
+``bash
+python main.py``
 systemd-сервис (опционально)
 Для автоматического запуска бота можно создать systemd-сервис. Пример файла certus_bot.service:
-```ini
+``ini
 [Unit]
 Description=Телеграм-бот Certus Telecom Tasks Bot
 After=network.target
@@ -46,11 +46,11 @@ ExecStart=/usr/bin/python3 /path/to/your/project/main.py
 Restart=on-failure
 
 [Install]
-WantedBy=multi-user.target```
+WantedBy=multi-user.target``
 Замените User и пути на свои.
 SQL-структура таблицы tickets
 Ниже приведена структура таблицы tickets для базы данных MariaDB:
-```sql
+``sql
 CREATE TABLE tickets (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -65,4 +65,4 @@ CREATE TABLE tickets (
     admin_id BIGINT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;```
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;``
