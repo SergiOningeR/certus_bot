@@ -17,6 +17,9 @@
 ```bash
 git clone https://github.com/sergioninger/certus_bot.git
 cd certus_bot
+apt install python3.11-venv
+python3 -m venv venv
+source venv/bin/activate
 ```
 Установите зависимости из requirements.txt:
 ```bash
