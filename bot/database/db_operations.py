@@ -1,100 +1,59 @@
-import mysql.connector
-from datetime import datetime
-from config import DB_CONFIG
+import aiomysql
+from aiomysql import DictCursor
+import config
 
-def get_connection():
-    return mysql.connector.connect(**DB_CONFIG)
+pool = None
 
-async def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            title TEXT,
-            description TEXT,
-            phone VARCHAR(20),
-            priority TINYINT,
-            company TEXT,
-            status ENUM('новая', 'в работе', 'завершена', 'отменена клиентом', 'отменена админом'),
-            created_at DATETIME,
-            user_telegram_id BIGINT,
-            user_username VARCHAR(64),
-            image_path TEXT,
-            report_text TEXT,
-            report_image TEXT,
-            admin_comment TEXT
-        )
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-async def create_ticket(data, user, image_path=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    query = """
-        INSERT INTO tickets (
-            title, description, phone, priority, company, status, created_at,
-            user_telegram_id, user_username, image_path
-        )
-        VALUES (%s, %s, %s, %s, %s, 'новая', %s, %s, %s, %s)
-    """
-    values = (
-        data['title'], data['description'], data['phone'], data['priority'], data['company'],
-        datetime.now(), user.id, user.username, image_path
+async def create_pool():
+    global pool
+    pool = await aiomysql.create_pool(
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASSWORD,
+        db=config.DB_NAME,
+        autocommit=True
     )
-    cursor.execute(query, values)
-    ticket_id = cursor.lastrowid
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return ticket_id
 
-async def get_user_tickets(user_id):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM tickets WHERE user_telegram_id = %s", (user_id,))
-    results = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return results
+async def close_pool():
+    global pool
+    if pool:
+        pool.close()
+        await pool.wait_closed()
 
-async def get_ticket_by_id(ticket_id):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM tickets WHERE id = %s", (ticket_id,))
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return result
+async def create_ticket(user_id: int, user_username: str, user_first_name: str, user_last_name: str, description: str, attachments: str) -> int:
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            sql = """
+                INSERT INTO tickets (user_id, user_username, user_first_name, user_last_name, description, attachments)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            await cur.execute(sql, (user_id, user_username, user_first_name, user_last_name, description, attachments))
+            await conn.commit()
+            return cur.lastrowid
 
-async def update_ticket_status(ticket_id, status):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE tickets SET status = %s WHERE id = %s", (status, ticket_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+async def update_ticket_status(ticket_id: int, status: str, admin_id: int):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            sql = "UPDATE tickets SET status=%s, admin_id=%s WHERE id=%s"
+            await cur.execute(sql, (status, admin_id, ticket_id))
+            await conn.commit()
 
-async def add_admin_comment(ticket_id, comment):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE tickets SET admin_comment = %s WHERE id = %s", (comment, ticket_id))
-    conn.commit()
-    cursor.close()
-    conn.close()
+async def add_ticket_report(ticket_id: int, report: str, report_attachments: str, admin_id: int):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            sql = """
+                UPDATE tickets
+                SET status='завершена', report=%s, report_attachments=%s, admin_id=%s
+                WHERE id=%s
+            """
+            await cur.execute(sql, (report, report_attachments, admin_id, ticket_id))
+            await conn.commit()
 
-async def add_report(ticket_id, report_text, image_path=None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE tickets SET report_text = %s, report_image = %s WHERE id = %s",
-        (report_text, image_path, ticket_id)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-async def cancel_user_ticket(ticket_id):
-    await update_ticket_status(ticket_id, "отменена клиентом")
+async def get_ticket(ticket_id: int):
+    async with pool.acquire() as conn:
+        async with conn.cursor(DictCursor) as cur:
+            sql = "SELECT * FROM tickets WHERE id=%s"
+            await cur.execute(sql, (ticket_id,))
+            result = await cur.fetchone()
+            return result

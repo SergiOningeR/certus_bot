@@ -1,3 +1,2 @@
-aiogram==2.25.2
-mysql-connector-python
-python-dotenv
+aiogram==3.4.1
+aiomysql

@@ -1,80 +1,95 @@
-from aiogram import Dispatcher, types
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot.database.db_operations import create_ticket, get_user_tickets, cancel_user_ticket
-from bot.utils.validators import validate_phone
-from bot.utils.messaging import save_user_image
-import os
+from aiogram import Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import Message, ContentType, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.fsm.context import FSMContext
 
-class TicketState(StatesGroup):
-    title = State()
+from bot.utils import messaging, validators
+from bot.database import db_operations
+import config
+import json
+
+router = Router()
+
+# FSM States
+from aiogram.fsm.state import StatesGroup, State
+
+class TicketStates(StatesGroup):
     description = State()
-    phone = State()
-    priority = State()
-    company = State()
-    image = State()
+    attachments = State()
 
-async def start_cmd(message: types.Message):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔧 Создать заявку", callback_data="new_ticket"))
-    await message.answer(
-        "Приветствуем в компании Certus Telecom! Для создания технической заявки нажмите «Создать заявку».",
-        reply_markup=markup
-    )
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    await message.answer("Привет! Я бот для создания заявок. Чтобы создать новую заявку, отправьте команду /new.")
 
-async def new_ticket(callback: types.CallbackQuery):
-    await TicketState.title.set()
-    await callback.message.answer("Введите название задачи:")
+@router.message(Command("new"))
+async def cmd_new(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(TicketStates.description)
+    await message.answer(messaging.ASK_DESCRIPTION)
 
-async def process_title(message: types.Message, state: FSMContext):
-    await state.update_data(title=message.text)
-    await TicketState.next()
-    await message.answer("Введите описание задачи:")
+@router.message(TicketStates.description)
+async def process_description(message: Message, state: FSMContext):
+    text = message.text
+    if not text or not validators.is_text_non_empty(text):
+        await message.answer("Описание не может быть пустым. Пожалуйста, опишите проблему.")
+        return
+    await state.update_data(description=text)
+    await state.set_state(TicketStates.attachments)
+    await message.answer(messaging.ASK_ATTACHMENTS)
 
-async def process_description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await TicketState.next()
-    await message.answer("Введите контактный номер (в формате +7 (XXX) XXX-XX-XX):")
-
-async def process_phone(message: types.Message, state: FSMContext):
-    if not validate_phone(message.text):
-        return await message.answer("Некорректный формат. Попробуйте снова.")
-    await state.update_data(phone=message.text)
-    await TicketState.next()
-    await message.answer("Укажите важность задачи (от 1 до 5):")
-
-async def process_priority(message: types.Message, state: FSMContext):
-    if message.text not in ["1", "2", "3", "4", "5"]:
-        return await message.answer("Введите число от 1 до 5.")
-    await state.update_data(priority=int(message.text))
-    await TicketState.next()
-    await message.answer("Введите название вашей компании:")
-
-async def process_company(message: types.Message, state: FSMContext):
-    await state.update_data(company=message.text)
-    await TicketState.next()
-    await message.answer("Прикрепите изображение (опционально) или напишите 'пропустить':")
-
-async def process_image(message: types.Message, state: FSMContext):
+@router.message(TicketStates.attachments, content_types=[ContentType.PHOTO, ContentType.DOCUMENT])
+async def process_attachments(message: Message, state: FSMContext):
     data = await state.get_data()
-    ticket_id = await create_ticket(data, message.from_user, None)
+    attachments = data.get("attachments", [])
+    # Сохраняем информацию о прикреплённых файлах
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        attachments.append({"file_id": file_id, "type": "photo"})
+    elif message.document:
+        file_id = message.document.file_id
+        attachments.append({"file_id": file_id, "type": "document"})
+    await state.update_data(attachments=attachments)
+    await message.answer("Файл добавлен. Если у вас есть ещё файлы, прикрепите их. Когда закончите, нажмите /done.")
 
-    if message.content_type == 'photo':
-        image_path = f"media/v_{ticket_id}.png"
-        await save_user_image(message, message.photo[-1].file_id, image_path)
-    else:
-        image_path = None
+@router.message(TicketStates.attachments)
+async def attachments_fallback(message: Message, state: FSMContext):
+    await message.answer("Нажмите /done для завершения создания заявки или прикрепите файл.")
 
-    await message.answer(f"Задача №{ticket_id} успешно создана и передана сотрудникам компании. Ожидайте обратную связь.")
-    await state.finish()
-
-def register_user_handlers(dp: Dispatcher):
-    dp.register_message_handler(start_cmd, commands="start")
-    dp.register_callback_query_handler(new_ticket, text="new_ticket")
-    dp.register_message_handler(process_title, state=TicketState.title)
-    dp.register_message_handler(process_description, state=TicketState.description)
-    dp.register_message_handler(process_phone, state=TicketState.phone)
-    dp.register_message_handler(process_priority, state=TicketState.priority)
-    dp.register_message_handler(process_company, state=TicketState.company)
-    dp.register_message_handler(process_image, content_types=types.ContentTypes.ANY, state=TicketState.image)
+@router.message(TicketStates.attachments, Command("done"))
+async def done_attachments(message: Message, state: FSMContext):
+    data = await state.get_data()
+    description = data.get("description")
+    attachments = data.get("attachments", [])
+    # Сохраняем заявку в БД
+    attachments_json = json.dumps(attachments)
+    ticket_id = await db_operations.create_ticket(
+        user_id=message.from_user.id,
+        user_username=message.from_user.username,
+        user_first_name=message.from_user.first_name,
+        user_last_name=message.from_user.last_name,
+        description=description,
+        attachments=attachments_json
+    )
+    # Отправляем заявку в группу
+    user_name = message.from_user.username or f"{message.from_user.first_name or ''}"
+    text = f"📥 <b>Новая заявка #{ticket_id}</b>\n" \
+           f"От: {user_name}\n" \
+           f"<b>Описание:</b> {description}"
+    # Inline-кнопки для администраторов
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("Взять в работу", callback_data=f"ticket:{ticket_id}:work"),
+        InlineKeyboardButton("Отменить", callback_data=f"ticket:{ticket_id}:cancel"),
+        InlineKeyboardButton("Завершить", callback_data=f"ticket:{ticket_id}:complete")
+    )
+    # Отправляем сообщение с кнопками
+    await message.bot.send_message(config.GROUP_ID, text, reply_markup=keyboard)
+    # Отправляем вложения
+    for att in attachments:
+        if att["type"] == "photo":
+            await message.bot.send_photo(config.GROUP_ID, att["file_id"])
+        elif att["type"] == "document":
+            await message.bot.send_document(config.GROUP_ID, att["file_id"])
+    # Подтверждаем пользователю
+    await message.answer(messaging.CREATE_SUCCESS.format(ticket_id=ticket_id))
+    await state.clear()

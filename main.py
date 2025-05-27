@@ -1,22 +1,33 @@
-import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.utils import executor
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.strategy import FSMStrategy
+import asyncio
+import logging
 
-from config import BOT_TOKEN
-from bot.handlers.user import register_user_handlers
-from bot.handlers.admin import register_admin_handlers
-from bot.database.db_operations import init_db
+import config
+from bot.handlers import user, admin
+from bot.database import db_operations
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
-
-async def on_startup(dispatcher):
-    os.makedirs("media", exist_ok=True)
-    await init_db()
-    print("✅ Бот запущен и подключен к базе данных.")
+async def main():
+    # Включаем логирование
+    logging.basicConfig(level=logging.INFO)
+    bot = Bot(token=config.BOT_TOKEN, parse_mode="HTML")
+    # Инициализируем хранилище FSM
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.USER)
+    # Регистрируем роутеры (обработчики)
+    dp.include_router(user.router)
+    dp.include_router(admin.router)
+    # Подключаемся к базе данных
+    await db_operations.create_pool()
+    # Запуск поллинга
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Закрываем соединения
+        await bot.session.close()
+        await db_operations.close_pool()
 
 if __name__ == "__main__":
-    register_user_handlers(dp)
-    register_admin_handlers(dp)
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())

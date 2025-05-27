@@ -1,61 +1,113 @@
-from aiogram import Dispatcher, types
-from config import ADMIN_GROUP_ID, ADMIN_THREAD_ID
-from bot.database.db_operations import update_ticket_status, get_ticket_by_id, add_admin_comment, add_report
-from bot.utils.messaging import notify_user, save_admin_image
+from aiogram import Router
+from aiogram.types import CallbackQuery, Message, ContentType
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 
-async def admin_group_listener(message: types.Message):
-    if message.chat.id != ADMIN_GROUP_ID or not message.reply_to_message:
+from bot.database import db_operations
+import config
+import json
+
+router = Router()
+
+# FSM States for admin report
+from aiogram.fsm.state import StatesGroup, State
+class AdminStates(StatesGroup):
+    wait_report = State()
+
+@router.callback_query(lambda c: c.data and c.data.startswith("ticket:"))
+async def process_ticket_action(query: CallbackQuery, state: FSMContext):
+    data = query.data.split(":")
+    if len(data) != 3:
+        await query.answer("Некорректные данные.")
+        return
+    _, ticket_id_str, action = data
+    ticket_id = int(ticket_id_str)
+    user = query.from_user
+    # Проверка прав администратора
+    if user.id not in config.ADMINS:
+        await query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
         return
 
-    if message.text.startswith("/ответ "):
-        original_text = message.reply_to_message.text
-        ticket_id = int(original_text.split('№')[1].split()[0])
-        reply_text = message.text.replace("/ответ ", "").strip()
-        ticket = await get_ticket_by_id(ticket_id)
+    if action == "work":
+        # Изменяем статус на "в работе"
+        await db_operations.update_ticket_status(ticket_id, "в работе", user.id)
+        await query.answer("Заявка помечена как 'в работе'.")
+        # Уведомляем пользователя
+        ticket = await db_operations.get_ticket(ticket_id)
         if ticket:
-            await notify_user(ticket['user_telegram_id'], f"Ответ от поддержки:\n{reply_text}")
+            await query.bot.send_message(ticket["user_id"], f"Ваша заявка #{ticket_id} принята в работу.")
+        # Обновляем текст сообщения с заявкой
+        text = query.message.text or ""
+        await query.message.edit_text(text + "\n\n🔧 Статус: в работе")
+    elif action == "cancel":
+        # Изменяем статус на "отменена"
+        await db_operations.update_ticket_status(ticket_id, "отменена", user.id)
+        await query.answer("Заявка помечена как 'отменена'.")
+        # Уведомляем пользователя
+        ticket = await db_operations.get_ticket(ticket_id)
+        if ticket:
+            await query.bot.send_message(ticket["user_id"], f"Ваша заявка #{ticket_id} отменена.")
+        # Обновляем текст сообщения
+        text = query.message.text or ""
+        await query.message.edit_text(text + "\n\n❌ Статус: отменена")
+    elif action == "complete":
+        # Помечаем, что ожидаем отчет
+        await query.answer("Ожидаем отчёт.")
+        # Удаляем кнопки, чтобы не нажимали повторно
+        text = query.message.text or ""
+        await query.message.edit_text(text + "\n\n📝 Ожидает отчёта")
+        # Переходим в режим ожидания отчета для данного администратора
+        await state.update_data(ticket_id=ticket_id)
+        await state.set_state(AdminStates.wait_report)
+        # Запрашиваем отчет у администратора в личке
+        await query.bot.send_message(user.id, f"Пожалуйста, отправьте отчёт по заявке #{ticket_id}. Введите текст и прикрепите файлы, затем нажмите /done.")
+    else:
+        await query.answer()
 
-async def accept_ticket(callback: types.CallbackQuery):
-    ticket_id = int(callback.data.split("_")[1])
-    await update_ticket_status(ticket_id, "в работе")
-    ticket = await get_ticket_by_id(ticket_id)
-    await notify_user(ticket['user_telegram_id'], f"Задача №{ticket_id} взята в работу, ожидайте завершения.")
-    await callback.answer("Заявка принята.")
+@router.message(AdminStates.wait_report, content_types=[ContentType.TEXT, ContentType.PHOTO, ContentType.DOCUMENT])
+async def process_report(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    if not ticket_id:
+        return
+    # Собираем отчёт и вложения
+    report_text = data.get("report_text", "")
+    attachments = data.get("attachments", [])
+    if message.text and not message.text.startswith('/'):
+        report_text += message.text + "\n"
+        await state.update_data(report_text=report_text)
+        await message.answer("Текст отчёта добавлен.")
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        attachments.append({"file_id": file_id, "type": "photo"})
+        await state.update_data(attachments=attachments)
+        await message.answer("Фото добавлено.")
+    if message.document:
+        file_id = message.document.file_id
+        attachments.append({"file_id": file_id, "type": "document"})
+        await state.update_data(attachments=attachments)
+        await message.answer("Документ добавлен.")
 
-async def cancel_ticket(callback: types.CallbackQuery):
-    ticket_id = int(callback.data.split("_")[1])
-    await callback.message.answer("Введите причину отмены заявки:")
-
-    @callback.message.bot.message_handler()
-    async def get_comment(msg: types.Message):
-        await update_ticket_status(ticket_id, "отменена админом")
-        await add_admin_comment(ticket_id, msg.text)
-        ticket = await get_ticket_by_id(ticket_id)
-        await notify_user(ticket['user_telegram_id'],
-                          f"Задача №{ticket_id} отменена администратором. Комментарий: {msg.text}")
-
-async def complete_ticket(callback: types.CallbackQuery):
-    ticket_id = int(callback.data.split("_")[1])
-    await callback.message.answer("Введите отчет о завершении:")
-
-    @callback.message.bot.message_handler()
-    async def get_report(msg: types.Message):
-        report_text = msg.text
-        image_path = None
-
-        if msg.photo:
-            image_path = f"media/o_{ticket_id}.png"
-            await save_admin_image(msg, msg.photo[-1].file_id, image_path)
-
-        await update_ticket_status(ticket_id, "завершена")
-        await add_report(ticket_id, report_text, image_path)
-        ticket = await get_ticket_by_id(ticket_id)
-        await notify_user(ticket['user_telegram_id'],
-                          f"Задача №{ticket_id} завершена. Отчет: {report_text}")
-        await msg.answer("Заявка завершена.")
-
-def register_admin_handlers(dp: Dispatcher):
-    dp.register_message_handler(admin_group_listener, content_types=types.ContentType.TEXT)
-    dp.register_callback_query_handler(accept_ticket, lambda c: c.data.startswith("accept_"))
-    dp.register_callback_query_handler(cancel_ticket, lambda c: c.data.startswith("cancel_"))
-    dp.register_callback_query_handler(complete_ticket, lambda c: c.data.startswith("complete_"))
+@router.message(AdminStates.wait_report, Command("done"))
+async def report_done(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    report_text = data.get("report_text", "")
+    attachments = data.get("attachments", [])
+    # Обновляем запись в БД
+    attachments_json = json.dumps(attachments)
+    await db_operations.add_ticket_report(ticket_id, report_text, attachments_json, message.from_user.id)
+    # Получаем информацию о заявке для уведомления пользователя
+    ticket = await db_operations.get_ticket(ticket_id)
+    user_id = ticket["user_id"] if ticket else None
+    # Отправляем отчёт пользователю
+    if user_id:
+        await message.bot.send_message(user_id, f"Ваша заявка #{ticket_id} завершена. Отчёт:\n{report_text}")
+        for att in attachments:
+            if att["type"] == "photo":
+                await message.bot.send_photo(user_id, att["file_id"])
+            elif att["type"] == "document":
+                await message.bot.send_document(user_id, att["file_id"])
+    await message.answer("Отчёт отправлен пользователю.")
+    # Сбрасываем состояние
+    await state.clear()
