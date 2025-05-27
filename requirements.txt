@@ -1,2 +1,4 @@
-aiogram==3.4.1
-aiomysql
+aiogram==3.0.0b7
+aiosqlite==0.18.0
+pydantic==1.10.7
+python-dotenv==0.21.0
